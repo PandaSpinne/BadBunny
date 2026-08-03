@@ -1,73 +1,101 @@
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Players = game:GetService("Players")
-local camera = workspace.CurrentCamera
+local Workspace = game:GetService("Workspace")
+
 local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
 
-local enabled = false
-local speed = 1.0
-local cameraCFrame = camera.CFrame
-local rotX, rotY = 0, 0
+local isFlying = false
+local flySpeed = 30 -- Startgeschwindigkeit (etwas moderater)
+local targetPart = nil
+local connection = nil
+local moveKeys = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
 
--- Funktion zum Umschalten
-local function toggleFreecam()
-    enabled = not enabled
-    if enabled then
-        cameraCFrame = camera.CFrame
-        local _, y, _ = cameraCFrame:ToEulerAnglesYXZ()
-        rotX, rotY = y, 0
-        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-    else
-        camera.CameraType = Enum.CameraType.Custom
-        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-    end
-end
+print("\n=======================================")
+print("[FLY-DEBUG] Script geladen!")
+print("[FLY-DEBUG] Drücke 'F' zum Starten/Stoppen.")
+print("[FLY-DEBUG] Drücke 'E' für SCHNELLER, 'Q' für LANGSAMER.")
+print("=======================================\n")
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.KeyCode == Enum.KeyCode.O then toggleFreecam() end
-end)
-
--- Maussteuerung (Direktes Abfangen der Delta-Bewegung)
-UserInputService.InputChanged:Connect(function(input, gameProcessed)
-    if not enabled or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    if gameProcessed then return end
+    if moveKeys[input.KeyCode.Name] ~= nil then moveKeys[input.KeyCode.Name] = true end
     
-    local delta = input.Delta
-    rotX -= delta.X * 0.005
-    rotY -= delta.Y * 0.005
-    rotY = math.clamp(rotY, -1.5, 1.5)
-    
-    -- Hier setzen wir die CFrame direkt, um das Spiel-Skript zu überschreiben
-    cameraCFrame = CFrame.new(cameraCFrame.Position) * CFrame.fromEulerAnglesYXZ(rotY, rotX, 0)
-end)
-
--- Scrollrad für Geschwindigkeit
-UserInputService.InputChanged:Connect(function(input, gameProcessed)
-    if not enabled then return end
-    if input.UserInputType == Enum.UserInputType.MouseWheel then
-        speed = math.clamp(speed + (input.Position.Z * 0.5), 0.1, 10.0)
+    if input.KeyCode == Enum.KeyCode.F then
+        if isFlying then stopFly() else startFly() end
+    elseif isFlying and input.KeyCode == Enum.KeyCode.Q then
+        flySpeed = flySpeed + 10
+        print("[SPEED] Erhöht auf: " .. flySpeed)
+    elseif isFlying and input.KeyCode == Enum.KeyCode.E then
+        flySpeed = math.max(5, flySpeed - 10)
+        print("[SPEED] Verringert auf: " .. flySpeed)
     end
 end)
 
--- Freecam Loop
-RunService:BindToRenderStep("Freecam", Enum.RenderPriority.Camera.Value + 100, function(dt)
-    if not enabled then return end
-    
-    camera.CameraType = Enum.CameraType.Scriptable
-    
-    local moveDir = Vector3.new(0, 0, 0)
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir += cameraCFrame.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir -= cameraCFrame.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir -= cameraCFrame.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir += cameraCFrame.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0, 1, 0) end
-    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir -= Vector3.new(0, 1, 0) end
-    
-    cameraCFrame = cameraCFrame + (moveDir * speed * dt * 60)
-    camera.CFrame = cameraCFrame
-    
-    -- Charakter-Animationen verhindern:
-    -- Wir setzen den HumanoidState auf 'Physics', damit er keine Lauf-Animationen abspielt
-    if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
-        player.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Physics)
-    end
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if moveKeys[input.KeyCode.Name] ~= nil then moveKeys[input.KeyCode.Name] = false end
 end)
+
+local function getTarget()
+    -- Kamera-Fokus nehmen (funktioniert auch bei Custom-Charakteren)
+    local subject = camera.CameraSubject
+    if subject then
+        local model = subject:FindFirstAncestorOfClass("Model")
+        if model then
+            return model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+        elseif subject:IsA("BasePart") then
+            return subject
+        end
+    end
+    
+    -- Fallback auf normalen Player
+    if player.Character then
+        return player.Character:FindFirstChild("HumanoidRootPart")
+    end
+    
+    return nil
+end
+
+function startFly()
+    targetPart = getTarget()
+    if not targetPart then 
+        warn("[ABBRUCH] Kein flugfähiges Objekt gefunden!")
+        return 
+    end
+
+    isFlying = true
+    print("[FLUG] AKTIVIERT! Ziel: " .. targetPart.Name)
+    targetPart.Anchored = true 
+
+    connection = RunService.RenderStepped:Connect(function(deltaTime)
+        if not isFlying or not targetPart or not targetPart.Parent then
+            stopFly()
+            return
+        end
+
+        local moveVector = Vector3.zero
+        if moveKeys.W then moveVector += camera.CFrame.LookVector end
+        if moveKeys.S then moveVector -= camera.CFrame.LookVector end
+        if moveKeys.A then moveVector -= camera.CFrame.RightVector end
+        if moveKeys.D then moveVector += camera.CFrame.RightVector end
+        if moveKeys.Space then moveVector += Vector3.new(0, 1, 0) end
+        if moveKeys.LeftShift then moveVector -= Vector3.new(0, 1, 0) end
+
+        if moveVector.Magnitude > 0 then
+            moveVector = moveVector.Unit * flySpeed
+        end
+
+        local newPos = targetPart.Position + (moveVector * deltaTime)
+        targetPart.CFrame = CFrame.new(newPos, newPos + camera.CFrame.LookVector)
+    end)
+end
+
+function stopFly()
+    isFlying = false
+    if connection then connection:Disconnect(); connection = nil end
+    if targetPart then
+        targetPart.Anchored = false
+        print("[FLUG] DEAKTIVIERT.")
+    end
+end
