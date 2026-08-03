@@ -7,7 +7,7 @@ local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
 local isFlying = false
-local flySpeed = 30 -- Startgeschwindigkeit (etwas moderater)
+local flySpeed = 25 -- Startgeschwindigkeit (etwas moderater)
 local targetPart = nil
 local connection = nil
 local moveKeys = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
