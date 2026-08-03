@@ -1,44 +1,31 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
-local isFlying = false
-local flySpeed = 25 -- Startgeschwindigkeit (etwas moderater)
-local targetPart = nil
-local connection = nil
-local moveKeys = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
+-- Empfängt die übergebenen Argumente (Aktion & optionale Geschwindigkeit)
+local action, speedParam = ...
 
-print("\n=======================================")
-print("[FLY-DEBUG] Script geladen!")
-print("[FLY-DEBUG] Drücke 'F' zum Starten/Stoppen.")
-print("[FLY-DEBUG] Drücke 'E' für SCHNELLER, 'Q' für LANGSAMER.")
-print("=======================================\n")
+-- Globale Speicherung der Verbindungen und Daten, damit sie beim Script-Neustart erhalten bleiben
+_G.FlyState = _G.FlyState or {
+    isFlying = false,
+    flySpeed = 30,
+    connection = nil,
+    targetPart = nil,
+    moveKeys = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
+}
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if moveKeys[input.KeyCode.Name] ~= nil then moveKeys[input.KeyCode.Name] = true end
-    
-    if input.KeyCode == Enum.KeyCode.F then
-        if isFlying then stopFly() else startFly() end
-    elseif isFlying and input.KeyCode == Enum.KeyCode.Q then
-        flySpeed = flySpeed + 10
-        print("[SPEED] Erhöht auf: " .. flySpeed)
-    elseif isFlying and input.KeyCode == Enum.KeyCode.E then
-        flySpeed = math.max(5, flySpeed - 10)
-        print("[SPEED] Verringert auf: " .. flySpeed)
-    end
-end)
+local state = _G.FlyState
 
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-    if moveKeys[input.KeyCode.Name] ~= nil then moveKeys[input.KeyCode.Name] = false end
-end)
+-- Geschwindigkeit anpassen, falls übergeben (Standard: 30)
+if type(speedParam) == "number" then
+    state.flySpeed = speedParam
+    print("[FLY] Geschwindigkeit gesetzt auf: " .. state.flySpeed)
+end
 
 local function getTarget()
-    -- Kamera-Fokus nehmen (funktioniert auch bei Custom-Charakteren)
     local subject = camera.CameraSubject
     if subject then
         local model = subject:FindFirstAncestorOfClass("Model")
@@ -49,7 +36,6 @@ local function getTarget()
         end
     end
     
-    -- Fallback auf normalen Player
     if player.Character then
         return player.Character:FindFirstChild("HumanoidRootPart")
     end
@@ -57,45 +43,77 @@ local function getTarget()
     return nil
 end
 
-function startFly()
-    targetPart = getTarget()
-    if not targetPart then 
+local function stopFly()
+    state.isFlying = false
+    if state.connection then 
+        state.connection:Disconnect()
+        state.connection = nil 
+    end
+    if state.targetPart then
+        state.targetPart.Anchored = false
+        print("[FLY] DEAKTIVIERT.")
+    end
+end
+
+local function startFly()
+    if state.isFlying then stopFly() end -- Falls noch aktiv, erst sauber stoppen
+
+    state.targetPart = getTarget()
+    if not state.targetPart then 
         warn("[ABBRUCH] Kein flugfähiges Objekt gefunden!")
         return 
     end
 
-    isFlying = true
-    print("[FLUG] AKTIVIERT! Ziel: " .. targetPart.Name)
-    targetPart.Anchored = true 
+    state.isFlying = true
+    print("[FLY] AKTIVIERT! Ziel: " .. state.targetPart.Name .. " (Speed: " .. state.flySpeed .. ")")
+    state.targetPart.Anchored = true 
 
-    connection = RunService.RenderStepped:Connect(function(deltaTime)
-        if not isFlying or not targetPart or not targetPart.Parent then
+    -- Tastatur-Inputs beim ersten Start einmalig registrieren
+    if not state.inputConnected then
+        local UserInputService = game:GetService("UserInputService")
+        UserInputService.InputBegan:Connect(function(input, gameProcessed)
+            if gameProcessed then return end
+            if state.moveKeys[input.KeyCode.Name] ~= nil then 
+                state.moveKeys[input.KeyCode.Name] = true 
+            end
+        end)
+
+        UserInputService.InputEnded:Connect(function(input, gameProcessed)
+            if state.moveKeys[input.KeyCode.Name] ~= nil then 
+                state.moveKeys[input.KeyCode.Name] = false 
+            end
+        end)
+        state.inputConnected = true
+    end
+
+    state.connection = RunService.RenderStepped:Connect(function(deltaTime)
+        if not state.isFlying or not state.targetPart or not state.targetPart.Parent then
             stopFly()
             return
         end
 
         local moveVector = Vector3.zero
-        if moveKeys.W then moveVector += camera.CFrame.LookVector end
-        if moveKeys.S then moveVector -= camera.CFrame.LookVector end
-        if moveKeys.A then moveVector -= camera.CFrame.RightVector end
-        if moveKeys.D then moveVector += camera.CFrame.RightVector end
-        if moveKeys.Space then moveVector += Vector3.new(0, 1, 0) end
-        if moveKeys.LeftShift then moveVector -= Vector3.new(0, 1, 0) end
+        if state.moveKeys.W then moveVector += camera.CFrame.LookVector end
+        if state.moveKeys.S then moveVector -= camera.CFrame.LookVector end
+        if state.moveKeys.A then moveVector -= camera.CFrame.RightVector end
+        if state.moveKeys.D then moveVector += camera.CFrame.RightVector end
+        if state.moveKeys.Space then moveVector += Vector3.new(0, 1, 0) end
+        if state.moveKeys.LeftShift then moveVector -= Vector3.new(0, 1, 0) end
 
         if moveVector.Magnitude > 0 then
-            moveVector = moveVector.Unit * flySpeed
+            moveVector = moveVector.Unit * state.flySpeed
         end
 
-        local newPos = targetPart.Position + (moveVector * deltaTime)
-        targetPart.CFrame = CFrame.new(newPos, newPos + camera.CFrame.LookVector)
+        local newPos = state.targetPart.Position + (moveVector * deltaTime)
+        state.targetPart.CFrame = CFrame.new(newPos, newPos + camera.CFrame.LookVector)
     end)
 end
 
-function stopFly()
-    isFlying = false
-    if connection then connection:Disconnect(); connection = nil end
-    if targetPart then
-        targetPart.Anchored = false
-        print("[FLUG] DEAKTIVIERT.")
-    end
+-- Ausführung basierend auf der übergebenen 'action'
+if action == "fly" then
+    startFly()
+elseif action == "unfly" then
+    stopFly()
+else
+    warn("[FLY] Ungültige oder fehlende Aktion! Nutze 'fly' oder 'unfly'. Beispiel: ...(\"fly\", 50)")
 end
