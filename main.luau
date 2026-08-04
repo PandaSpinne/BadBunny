@@ -81,7 +81,7 @@ iconLabel.Image = "rbxassetid://121696069"
 iconLabel.Parent = titleBar
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -80, 1, 0)
+titleLabel.Size = UDim2.new(1, -110, 1, 0)
 titleLabel.Position = UDim2.new(0, 32, 0, 0)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Text = "Bad Bunny"
@@ -107,6 +107,23 @@ closeButton.Parent = titleBar
 local closeCorner = Instance.new("UICorner")
 closeCorner.CornerRadius = UDim.new(0, 6)
 closeCorner.Parent = closeButton
+
+-- Minimieren-Button
+local minimizeButton = Instance.new("TextButton")
+minimizeButton.Size = UDim2.new(0, 24, 0, 24)
+minimizeButton.Position = UDim2.new(1, -58, 0.5, -12)
+minimizeButton.BackgroundColor3 = Color3.fromRGB(50, 50, 90)
+minimizeButton.BackgroundTransparency = 0.6
+minimizeButton.Text = "-"
+minimizeButton.TextColor3 = Color3.fromRGB(190, 190, 255)
+minimizeButton.Font = Enum.Font.GothamBold
+minimizeButton.TextSize = 20
+minimizeButton.BorderSizePixel = 0
+minimizeButton.Parent = titleBar
+
+local minimizeCorner = Instance.new("UICorner")
+minimizeCorner.CornerRadius = UDim.new(0, 6)
+minimizeCorner.Parent = minimizeButton
 
 -- Trennlinie
 local separator = Instance.new("Frame")
@@ -188,6 +205,15 @@ inputBox.TextXAlignment = Enum.TextXAlignment.Left
 inputBox.ClearTextOnFocus = false
 inputBox.Parent = inputBar
 
+-- NEU: Restore-Button (Icon zum Vergrößern)
+local restoreButton = Instance.new("ImageButton")
+restoreButton.Size = UDim2.new(0, 22, 0, 22)
+restoreButton.Position = UDim2.new(0, 8, 0.5, -11)
+restoreButton.BackgroundTransparency = 1
+restoreButton.Image = "rbxassetid://121696069" -- Dein Bad Bunny Icon
+restoreButton.Visible = false
+restoreButton.Parent = mainFrame
+
 screenGui.Parent = playerGui
 
 -- ========================
@@ -197,6 +223,11 @@ screenGui.Parent = playerGui
 local commandHistory = {}
 local historyIndex = 0
 local isVisible = false
+local isMinimized = false
+
+-- Für Wiederherstellung nach dem Minimieren
+local normalSize = mainFrame.Size
+local normalPos = mainFrame.Position
 
 -- Nach Rejoin automatisch öffnen, falls TeleportData vorhanden
 local teleportData = TeleportService:GetLocalPlayerTeleportData()
@@ -262,10 +293,48 @@ local function toggleConsole(show)
     end
 end
 
+local function setMinimized(minimized)
+    isMinimized = minimized
+    if minimized then
+        -- Merken vor dem Minimieren
+        normalSize = mainFrame.Size
+        
+        -- Ausblenden was nicht gebraucht wird, Restore-Button einblenden
+        titleBar.Visible = false
+        separator.Visible = false
+        outputFrame.Visible = false
+        shadow.Visible = false
+        restoreButton.Visible = true
+        
+        -- Größe anpassen und an den Boden heften
+        mainFrame.Size = UDim2.new(0, 440, 0, 36)
+        mainFrame.Position = UDim2.new(0, mainFrame.AbsolutePosition.X, 1, -36)
+        
+        -- Eingabe-Bar schmaler machen, damit das Icon links Platz hat
+        inputBar.Size = UDim2.new(1, -46, 1, -8)
+        inputBar.Position = UDim2.new(0, 38, 0, 4)
+    else
+        -- Alles wiederherstellen
+        titleBar.Visible = true
+        separator.Visible = true
+        outputFrame.Visible = true
+        shadow.Visible = true
+        restoreButton.Visible = false
+        
+        mainFrame.Size = normalSize
+        mainFrame.Position = UDim2.new(0, mainFrame.AbsolutePosition.X, 1, -315)
+        
+        -- Eingabe-Bar wieder über die volle Breite ziehen
+        inputBar.Size = UDim2.new(1, -16, 0, 28)
+        inputBar.Position = UDim2.new(0, 8, 1, -35)
+        
+        inputBox:CaptureFocus()
+    end
+end
+
 -- Eingabe verarbeiten
 inputBox.FocusLost:Connect(function(enterPressed)
     if enterPressed then
-		-- NEU: Setzt den Cursor sofort wieder in das Textfeld zurück
         task.defer(function()
             inputBox:CaptureFocus()
         end)
@@ -289,9 +358,21 @@ inputBox.FocusLost:Connect(function(enterPressed)
 
         if text == "rejoin" then
             addOutput("⟳ Rejoine Server...", Color3.fromRGB(255, 200, 80))
+            
+            -- Script für die nächste Instanz/Server in die Queue legen
+            local teleportScript = [[
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/PandaSpinne/BadBunny/refs/heads/main/main.luau"))()
+            ]]
+            
+            local queueFunction = queue_on_teleport or (syn and syn.queue_on_teleport) or queue_for_teleport
+            if queueFunction then
+                queueFunction(teleportScript)
+            end
+
             local jobId = game.JobId
             local placeId = game.PlaceId
             local rejoinData = {debugConsole = true}
+            
             if jobId ~= "" then
                 TeleportService:TeleportToPlaceInstance(placeId, jobId, player, nil, rejoinData)
             else
@@ -305,15 +386,12 @@ inputBox.FocusLost:Connect(function(enterPressed)
             return
         end
 
-        -- NEU: Checkt, ob der Text mit "fly" anfängt und holt eine evtl. Zahl
         local speedParam = string.match(text, "^fly%s*(%d*)$")
         if speedParam then
             local speed = tonumber(speedParam)
             if speed then
-                -- Falls eine Zahl übergeben wurde (z.B. "fly 50")
                 loadstring(game:HttpGet("https://raw.githubusercontent.com/PandaSpinne/BadBunny/refs/heads/main/fly.luau"))("fly", speed)
             else
-                -- Falls nur "fly" eingegeben wurde
                 loadstring(game:HttpGet("https://raw.githubusercontent.com/PandaSpinne/BadBunny/refs/heads/main/fly.luau"))("fly")
             end
             return
@@ -321,6 +399,11 @@ inputBox.FocusLost:Connect(function(enterPressed)
 
         if text == "unfly" then
             loadstring(game:HttpGet("https://raw.githubusercontent.com/PandaSpinne/BadBunny/refs/heads/main/fly.luau"))("unfly")
+            return
+        end
+
+        if text == "dex" then
+            loadstring(game:HttpGet("https://github.com/AZYsGithub/DexPlusPlus/releases/latest/download/out.lua"))()
             return
         end
 
@@ -357,17 +440,39 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- Schließen-Button
+-- Button Events
 closeButton.MouseButton1Click:Connect(function()
     toggleConsole(false)
 end)
 
--- Hover-Effekt Schließen-Button
+minimizeButton.MouseButton1Click:Connect(function()
+    setMinimized(true)
+end)
+
+restoreButton.MouseButton1Click:Connect(function()
+    setMinimized(false)
+end)
+
+-- Hover-Effekte Buttons
 closeButton.MouseEnter:Connect(function()
     TweenService:Create(closeButton, TweenInfo.new(0.15), {BackgroundTransparency = 0.1}):Play()
 end)
 closeButton.MouseLeave:Connect(function()
     TweenService:Create(closeButton, TweenInfo.new(0.15), {BackgroundTransparency = 0.6}):Play()
+end)
+
+minimizeButton.MouseEnter:Connect(function()
+    TweenService:Create(minimizeButton, TweenInfo.new(0.15), {BackgroundTransparency = 0.1}):Play()
+end)
+minimizeButton.MouseLeave:Connect(function()
+    TweenService:Create(minimizeButton, TweenInfo.new(0.15), {BackgroundTransparency = 0.6}):Play()
+end)
+
+restoreButton.MouseEnter:Connect(function()
+    TweenService:Create(restoreButton, TweenInfo.new(0.15), {ImageTransparency = 0.3}):Play()
+end)
+restoreButton.MouseLeave:Connect(function()
+    TweenService:Create(restoreButton, TweenInfo.new(0.15), {ImageTransparency = 0}):Play()
 end)
 
 -- ========================
@@ -378,12 +483,19 @@ local dragging = false
 local dragStart = nil
 local startPos = nil
 
-titleBar.InputBegan:Connect(function(input)
+local function startDragging(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
         startPos = mainFrame.Position
         inputBox:ReleaseFocus()
+    end
+end
+
+titleBar.InputBegan:Connect(startDragging)
+inputBar.InputBegan:Connect(function(input)
+    if isMinimized then
+        startDragging(input)
     end
 end)
 
@@ -392,13 +504,23 @@ titleBar.InputEnded:Connect(function(input)
         dragging = false
     end
 end)
+inputBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
 
 UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
+        if isMinimized then
+            local newX = startPos.X.Offset + delta.X
+            mainFrame.Position = UDim2.new(0, newX, 1, -36)
+        else
+            mainFrame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
     end
 end)
