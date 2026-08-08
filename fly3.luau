@@ -6,10 +6,8 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
--- Empfängt die übergebenen Argumente (Aktion & optionale Geschwindigkeit)
 local action, speedParam = ...
 
--- Globale Speicherung der Verbindungen und Daten
 _G.FlyState = _G.FlyState or {
     isFlying = false,
     flySpeed = 30,
@@ -17,17 +15,16 @@ _G.FlyState = _G.FlyState or {
     cframeConnection = nil,
     targetPart = nil,
     lastCF = nil,
-    stopCFChange = false,
-    isUpdatingCFrame = false, -- Verhindert, dass wir uns selbst blockieren
+    ignoreCFChange = false,
+    bodyVel = nil,
+    bodyGyro = nil,
     moveKeys = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
 }
 
 local state = _G.FlyState
 
--- Geschwindigkeit anpassen
 if type(speedParam) == "number" then
     state.flySpeed = speedParam
-    print("[FLY] Geschwindigkeit gesetzt auf: " .. state.flySpeed)
 end
 
 local function getTarget()
@@ -40,34 +37,24 @@ local function getTarget()
             return subject
         end
     end
-    
     if player.Character then
         return player.Character:FindFirstChild("HumanoidRootPart")
     end
-    
     return nil
 end
 
 local function stopFly()
     state.isFlying = false
     
-    if state.connection then 
-        state.connection:Disconnect()
-        state.connection = nil 
-    end
-    
-    if state.cframeConnection then
-        state.cframeConnection:Disconnect()
-        state.cframeConnection = nil
-    end
+    if state.connection then state.connection:Disconnect() state.connection = nil end
+    if state.cframeConnection then state.cframeConnection:Disconnect() state.cframeConnection = nil end
+
+    if state.bodyVel then state.bodyVel:Destroy() state.bodyVel = nil end
+    if state.bodyGyro then state.bodyGyro:Destroy() state.bodyGyro = nil end
 
     if state.targetPart then
-        state.targetPart.Anchored = false
-        
-        -- Den Charakter wieder normal laufen lassen
         local hum = state.targetPart.Parent:FindFirstChildOfClass("Humanoid")
         if hum then hum.PlatformStand = false end
-        
         print("[FLY] DEAKTIVIERT.")
     end
 end
@@ -83,55 +70,61 @@ local function startFly()
 
     state.isFlying = true
     state.lastCF = state.targetPart.CFrame
-    print("[FLY] AKTIVIERT! Ziel: " .. state.targetPart.Name .. " (Speed: " .. state.flySpeed .. ")")
-    
-    -- WICHTIG: NICHT ANCHOREN! Nur so sendet der Client deine Position an den Server für Interaktionen.
     state.targetPart.Anchored = false 
+    print("[FLY] AKTIVIERT! Ziel: " .. state.targetPart.Name .. " (Speed: " .. state.flySpeed .. ")")
 
-    -- PlatformStand verhindert, dass der Charakter in der Luft komische Lauf-Animationen abspielt
+    -- Character in den "Flugmodus" setzen (verhindert Lauf-Animationen und Bodenreibung)
     local hum = state.targetPart.Parent:FindFirstChildOfClass("Humanoid")
     if hum then hum.PlatformStand = true end
 
-    -- CFrame-Lock Logik: Deine Anti-Teleport/Lagback Methode
+    -- 1. BodyVelocity für die Bewegung (Physikbasiert = kein Stottern)
+    state.bodyVel = Instance.new("BodyVelocity")
+    state.bodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    state.bodyVel.Velocity = Vector3.zero
+    state.bodyVel.Parent = state.targetPart
+
+    -- 2. BodyGyro für die Ausrichtung zur Kamera
+    state.bodyGyro = Instance.new("BodyGyro")
+    state.bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    state.bodyGyro.P = 9e4
+    state.bodyGyro.CFrame = camera.CFrame
+    state.bodyGyro.Parent = state.targetPart
+
+    -- 3. CFrame-Lock (Anti-Teleport)
+    -- Feuert NICHT beim Fliegen, sondern NUR, wenn ein Script (Server) dich teleportiert!
     state.cframeConnection = state.targetPart:GetPropertyChangedSignal("CFrame"):Connect(function()
-        -- Wenn WIR die Position gerade updaten, blockiere es nicht
-        if not state.isFlying or state.isUpdatingCFrame then return end 
+        if not state.isFlying or state.ignoreCFChange then return end 
         
-        -- Wenn wir HIER landen, hat das Anti-Cheat vom Server versucht dich zu teleportieren!
-        state.stopCFChange = true
+        -- Server hat uns teleportiert! Zurückschlagen!
+        state.ignoreCFChange = true
         state.targetPart.CFrame = state.lastCF
         RunService.Heartbeat:Wait()
-        state.stopCFChange = false
+        state.ignoreCFChange = false
     end)
 
-    -- Tastatur-Inputs beim ersten Start einmalig registrieren
+    -- Inputs registrieren
     if not state.inputConnected then
         UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if gameProcessed then return end
-            if state.moveKeys[input.KeyCode.Name] ~= nil then 
-                state.moveKeys[input.KeyCode.Name] = true 
-            end
+            if state.moveKeys[input.KeyCode.Name] ~= nil then state.moveKeys[input.KeyCode.Name] = true end
         end)
-
         UserInputService.InputEnded:Connect(function(input, gameProcessed)
-            if state.moveKeys[input.KeyCode.Name] ~= nil then 
-                state.moveKeys[input.KeyCode.Name] = false 
-            end
+            if state.moveKeys[input.KeyCode.Name] ~= nil then state.moveKeys[input.KeyCode.Name] = false end
         end)
         state.inputConnected = true
     end
 
-    -- Haupt-Flug-Schleife
-    state.connection = RunService.RenderStepped:Connect(function(deltaTime)
+    -- Flug-Schleife
+    state.connection = RunService.RenderStepped:Connect(function()
         if not state.isFlying or not state.targetPart or not state.targetPart.Parent then
             stopFly()
             return
         end
 
-        -- Da wir nicht "Anchored" sind, müssen wir die Schwerkraft jeden Frame töten:
-        state.targetPart.AssemblyLinearVelocity = Vector3.zero
-        state.targetPart.AssemblyAngularVelocity = Vector3.zero
+        -- Immer aktuelle, legitime Position speichern, falls der Server angreift
+        state.lastCF = state.targetPart.CFrame
 
+        -- Richtung berechnen
         local moveVector = Vector3.zero
         if state.moveKeys.W then moveVector += camera.CFrame.LookVector end
         if state.moveKeys.S then moveVector -= camera.CFrame.LookVector end
@@ -144,25 +137,14 @@ local function startFly()
             moveVector = moveVector.Unit * state.flySpeed
         end
 
-        local newPos = state.targetPart.Position + (moveVector * deltaTime)
-        local targetCFrame = CFrame.new(newPos, newPos + camera.CFrame.LookVector)
-
-        -- Position aktualisieren und CFrame-Sperre kurz pausieren, damit wir uns selbst bewegen dürfen
-        if not state.stopCFChange then
-            state.lastCF = targetCFrame
-            
-            state.isUpdatingCFrame = true
-            state.targetPart.CFrame = targetCFrame
-            state.isUpdatingCFrame = false
-        end
+        -- Physik-Kräfte aktualisieren statt CFrame hart zu setzen
+        state.bodyVel.Velocity = moveVector
+        state.bodyGyro.CFrame = camera.CFrame
     end)
 end
 
--- Ausführung
 if action == "fly" then
     startFly()
 elseif action == "unfly" then
     stopFly()
-else
-    warn("[FLY] Ungültige oder fehlende Aktion! Nutze 'fly' oder 'unfly'.")
 end
