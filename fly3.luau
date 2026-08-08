@@ -24,10 +24,38 @@ if type(speedParam) == "number" then
     state.flySpeed = speedParam
 end
 
+-- Findet flexibel das richtige Part (auch bei Custom-Characters/Rigs/Vehicles)
 local function getTarget()
-    if player.Character then
-        return player.Character:FindFirstChild("HumanoidRootPart")
+    -- 1. Versuch: Über das Zielobjekt der Kamera (CameraSubject)
+    local subject = camera.CameraSubject
+    if subject then
+        if subject:IsA("BasePart") then
+            return subject
+        elseif subject:IsA("Humanoid") then
+            local parentModel = subject.Parent
+            if parentModel then
+                return parentModel:FindFirstChild("HumanoidRootPart") 
+                    or parentModel.PrimaryPart 
+                    or parentModel:FindFirstChildWhichIsA("BasePart")
+            end
+        end
     end
+    
+    -- 2. Versuch: Über das normale Character-Model des Spielers
+    local char = player.Character
+    if char then
+        return char:FindFirstChild("HumanoidRootPart") 
+            or char.PrimaryPart 
+            or char:FindFirstChildWhichIsA("BasePart")
+    end
+
+    -- 3. Versuch: Wenn sich der Charakter in einem Unterordner/Modell befindet
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child:IsA("Model") and (child.Name == player.Name or child:GetAttribute("Owner") == player.Name) then
+            return child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+        end
+    end
+
     return nil
 end
 
@@ -39,7 +67,6 @@ local function stopFly()
         state.connection = nil 
     end
 
-    -- Physik-Objekte entfernen
     if state.linearVelocity then
         state.linearVelocity:Destroy()
         state.linearVelocity = nil
@@ -61,14 +88,14 @@ local function startFly()
 
     state.targetPart = getTarget()
     if not state.targetPart then 
-        warn("[ABBRUCH] Kein HumanoidRootPart gefunden!")
+        warn("[ABBRUCH] Kein steuerbares Objekt / Part für den Flug gefunden!")
         return 
     end
 
     state.isFlying = true
-    print("[FLY] AKTIVIERT! (Speed: " .. state.flySpeed .. ")")
+    print("[FLY] AKTIVIERT! Flug-Objekt: " .. state.targetPart:GetFullName() .. " (Speed: " .. state.flySpeed .. ")")
 
-    -- Er erstelle Attachment & LinearVelocity für flüssige Server-Synchronisation
+    -- Attachment & LinearVelocity an das gefundene Custom-Part hängen
     state.attachment = Instance.new("Attachment")
     state.attachment.Name = "FlyAttachment"
     state.attachment.Parent = state.targetPart
@@ -117,7 +144,6 @@ local function startFly()
             moveVector = moveVector.Unit * state.flySpeed
         end
 
-        -- Physik-Geschwindigkeit setzen, statt CFrame / Anchored zu erzwingen
         if state.linearVelocity then
             state.linearVelocity.VectorVelocity = moveVector
         end
