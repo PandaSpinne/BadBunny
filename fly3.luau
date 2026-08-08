@@ -6,56 +6,45 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
+-- Empfängt die übergebenen Argumente (Aktion & optionale Geschwindigkeit)
 local action, speedParam = ...
 
+-- Globale Speicherung der Verbindungen und Daten
 _G.FlyState = _G.FlyState or {
     isFlying = false,
     flySpeed = 30,
     connection = nil,
+    cframeConnection = nil,
     targetPart = nil,
-    linearVelocity = nil,
-    attachment = nil,
+    lastCF = nil,
+    stopCFChange = false,
+    isUpdatingCFrame = false, -- Verhindert, dass wir uns selbst blockieren
     moveKeys = {W = false, A = false, S = false, D = false, Space = false, LeftShift = false}
 }
 
 local state = _G.FlyState
 
+-- Geschwindigkeit anpassen
 if type(speedParam) == "number" then
     state.flySpeed = speedParam
+    print("[FLY] Geschwindigkeit gesetzt auf: " .. state.flySpeed)
 end
 
--- Findet flexibel das richtige Part (auch bei Custom-Characters/Rigs/Vehicles)
 local function getTarget()
-    -- 1. Versuch: Über das Zielobjekt der Kamera (CameraSubject)
     local subject = camera.CameraSubject
     if subject then
-        if subject:IsA("BasePart") then
+        local model = subject:FindFirstAncestorOfClass("Model")
+        if model then
+            return model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+        elseif subject:IsA("BasePart") then
             return subject
-        elseif subject:IsA("Humanoid") then
-            local parentModel = subject.Parent
-            if parentModel then
-                return parentModel:FindFirstChild("HumanoidRootPart") 
-                    or parentModel.PrimaryPart 
-                    or parentModel:FindFirstChildWhichIsA("BasePart")
-            end
         end
     end
     
-    -- 2. Versuch: Über das normale Character-Model des Spielers
-    local char = player.Character
-    if char then
-        return char:FindFirstChild("HumanoidRootPart") 
-            or char.PrimaryPart 
-            or char:FindFirstChildWhichIsA("BasePart")
+    if player.Character then
+        return player.Character:FindFirstChild("HumanoidRootPart")
     end
-
-    -- 3. Versuch: Wenn sich der Charakter in einem Unterordner/Modell befindet
-    for _, child in ipairs(Workspace:GetChildren()) do
-        if child:IsA("Model") and (child.Name == player.Name or child:GetAttribute("Owner") == player.Name) then
-            return child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
-        end
-    end
-
+    
     return nil
 end
 
@@ -66,49 +55,56 @@ local function stopFly()
         state.connection:Disconnect()
         state.connection = nil 
     end
-
-    if state.linearVelocity then
-        state.linearVelocity:Destroy()
-        state.linearVelocity = nil
-    end
-
-    if state.attachment then
-        state.attachment:Destroy()
-        state.attachment = nil
+    
+    if state.cframeConnection then
+        state.cframeConnection:Disconnect()
+        state.cframeConnection = nil
     end
 
     if state.targetPart then
-        state.targetPart.AssemblyLinearVelocity = Vector3.zero
+        state.targetPart.Anchored = false
+        
+        -- Den Charakter wieder normal laufen lassen
+        local hum = state.targetPart.Parent:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+        
         print("[FLY] DEAKTIVIERT.")
     end
 end
 
 local function startFly()
-    if state.isFlying then stopFly() end
+    if state.isFlying then stopFly() end 
 
     state.targetPart = getTarget()
     if not state.targetPart then 
-        warn("[ABBRUCH] Kein steuerbares Objekt / Part für den Flug gefunden!")
+        warn("[ABBRUCH] Kein flugfähiges Objekt gefunden!")
         return 
     end
 
     state.isFlying = true
-    print("[FLY] AKTIVIERT! Flug-Objekt: " .. state.targetPart:GetFullName() .. " (Speed: " .. state.flySpeed .. ")")
+    state.lastCF = state.targetPart.CFrame
+    print("[FLY] AKTIVIERT! Ziel: " .. state.targetPart.Name .. " (Speed: " .. state.flySpeed .. ")")
+    
+    -- WICHTIG: NICHT ANCHOREN! Nur so sendet der Client deine Position an den Server für Interaktionen.
+    state.targetPart.Anchored = false 
 
-    -- Attachment & LinearVelocity an das gefundene Custom-Part hängen
-    state.attachment = Instance.new("Attachment")
-    state.attachment.Name = "FlyAttachment"
-    state.attachment.Parent = state.targetPart
+    -- PlatformStand verhindert, dass der Charakter in der Luft komische Lauf-Animationen abspielt
+    local hum = state.targetPart.Parent:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = true end
 
-    state.linearVelocity = Instance.new("LinearVelocity")
-    state.linearVelocity.Name = "FlyLinearVelocity"
-    state.linearVelocity.Attachment0 = state.attachment
-    state.linearVelocity.MaxForce = math.huge
-    state.linearVelocity.VectorVelocity = Vector3.zero
-    state.linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
-    state.linearVelocity.Parent = state.targetPart
+    -- CFrame-Lock Logik: Deine Anti-Teleport/Lagback Methode
+    state.cframeConnection = state.targetPart:GetPropertyChangedSignal("CFrame"):Connect(function()
+        -- Wenn WIR die Position gerade updaten, blockiere es nicht
+        if not state.isFlying or state.isUpdatingCFrame then return end 
+        
+        -- Wenn wir HIER landen, hat das Anti-Cheat vom Server versucht dich zu teleportieren!
+        state.stopCFChange = true
+        state.targetPart.CFrame = state.lastCF
+        RunService.Heartbeat:Wait()
+        state.stopCFChange = false
+    end)
 
-    -- Tastatur-Inputs registrieren
+    -- Tastatur-Inputs beim ersten Start einmalig registrieren
     if not state.inputConnected then
         UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if gameProcessed then return end
@@ -125,12 +121,16 @@ local function startFly()
         state.inputConnected = true
     end
 
-    -- Flug-Schleife
-    state.connection = RunService.RenderStepped:Connect(function()
+    -- Haupt-Flug-Schleife
+    state.connection = RunService.RenderStepped:Connect(function(deltaTime)
         if not state.isFlying or not state.targetPart or not state.targetPart.Parent then
             stopFly()
             return
         end
+
+        -- Da wir nicht "Anchored" sind, müssen wir die Schwerkraft jeden Frame töten:
+        state.targetPart.AssemblyLinearVelocity = Vector3.zero
+        state.targetPart.AssemblyAngularVelocity = Vector3.zero
 
         local moveVector = Vector3.zero
         if state.moveKeys.W then moveVector += camera.CFrame.LookVector end
@@ -144,14 +144,25 @@ local function startFly()
             moveVector = moveVector.Unit * state.flySpeed
         end
 
-        if state.linearVelocity then
-            state.linearVelocity.VectorVelocity = moveVector
+        local newPos = state.targetPart.Position + (moveVector * deltaTime)
+        local targetCFrame = CFrame.new(newPos, newPos + camera.CFrame.LookVector)
+
+        -- Position aktualisieren und CFrame-Sperre kurz pausieren, damit wir uns selbst bewegen dürfen
+        if not state.stopCFChange then
+            state.lastCF = targetCFrame
+            
+            state.isUpdatingCFrame = true
+            state.targetPart.CFrame = targetCFrame
+            state.isUpdatingCFrame = false
         end
     end)
 end
 
+-- Ausführung
 if action == "fly" then
     startFly()
 elseif action == "unfly" then
     stopFly()
+else
+    warn("[FLY] Ungültige oder fehlende Aktion! Nutze 'fly' oder 'unfly'.")
 end
