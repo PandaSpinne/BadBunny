@@ -14,3 +14,6 @@
 ```
 loadstring(game:HttpGet("https://raw.githubusercontent.com/PandaSpinne/BadBunny/refs/heads/main/main.luau"))()
 ```
+
+> [!TIP]
+> Find Executers at: https://weao.xyz/
